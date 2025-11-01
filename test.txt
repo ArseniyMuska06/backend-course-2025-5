@@ -1,0 +1,20 @@
+# --- PUT -> 201 Created ---
+curl -i -X PUT --data-binary @sample.jpg http://127.0.0.1:3000/200
+
+# --- GET існуючого -> 200 OK + image/jpeg ---
+curl -i http://127.0.0.1:3000/200
+
+# --- GET відсутнього -> 404 Not Found ---
+curl -i http://127.0.0.1:3000/404
+
+# --- Метод не дозволено -> 405 ---
+curl -i -X POST http://127.0.0.1:3000/200
+
+# --- DELETE існуючого -> 200 OK ---
+curl -i -X DELETE http://127.0.0.1:3000/200
+
+# --- GET після видалення -> 404 ---
+curl -i http://127.0.0.1:3000/200
+
+# --- Healthcheck -> 200 OK ---
+curl -i http://127.0.0.1:3000/health

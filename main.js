@@ -13,22 +13,22 @@ const program = new Command();
 
 program
   .name('cli-web-server-cache')
-  .description('HTTP server controlled by CLI options: --host, --port, --cache')
-  .requiredOption('-h, --host <host>', 'Server host (required), e.g. 127.0.0.1')
-  .requiredOption('-p, --port <port>', 'Server port (required), e.g. 3000', (v) => {
+  .description('HTTP server with cache: GET/PUT/DELETE /<code> for JPEG files')
+  .requiredOption('-h, --host <host>', 'Server host, e.g. 127.0.0.1')
+  .requiredOption('-p, --port <port>', 'Server port, e.g. 3000', (v) => {
     const n = Number(v);
     if (!Number.isInteger(n) || n < 1 || n > 65535) {
       throw new Error('Port must be an integer between 1 and 65535');
     }
     return n;
   })
-  .requiredOption('-c, --cache <dir>', 'Path to cache directory (required). Will be created if missing.')
-  .version('1.0.0');
+  .requiredOption('-c, --cache <dir>', 'Cache directory (will be created if missing)')
+  .version('1.1.0');
 
 let opts;
 try {
   opts = program.parse(process.argv).opts();
-} catch (e) {
+} catch {
   process.exitCode = 1;
   process.exit();
 }
@@ -41,27 +41,16 @@ try {
   console.error(`Failed to ensure cache directory "${cache}":`, err.message);
   process.exit(1);
 }
-
 const CACHE_DIR = path.resolve(cache);
 
-function sanitizeName(name) {
-  const unsafe = name.includes('..') || path.isAbsolute(name);
-  if (unsafe) throw new Error('Unsafe filename');
-  return name;
-}
-
-function cachePath(name) {
-  return path.join(CACHE_DIR, name);
-}
+const codeRegex = /^\d{3}$/;
+const fileForCode = (code) => path.join(CACHE_DIR, `${code}.jpg`);
 
 async function listCacheFiles() {
   try {
     const items = await fsp.readdir(CACHE_DIR, { withFileTypes: true });
-    return items
-      .filter((d) => d.isFile())
-      .map((d) => d.name)
-      .sort();
-  } catch (e) {
+    return items.filter(d => d.isFile()).map(d => d.name).sort();
+  } catch {
     return [];
   }
 }
@@ -72,9 +61,8 @@ const server = http.createServer(async (req, res) => {
   const pathname = decodeURIComponent(parsed.pathname || '/');
 
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,PUT,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
   if (method === 'OPTIONS') {
     res.writeHead(204);
     return res.end();
@@ -87,68 +75,74 @@ const server = http.createServer(async (req, res) => {
 
   if (method === 'GET' && pathname === '/') {
     const files = await listCacheFiles();
-    const list = files.map((f) => `<li><a href="/cache/${encodeURIComponent(f)}">${f}</a></li>`).join('');
+    const list = files.map(f => `<li>${f}</li>`).join('');
     const html = `<!doctype html>
-<html lang="uk">
 <meta charset="utf-8">
 <title>Cache Index</title>
 <body style="font-family:system-ui,Segoe UI,Arial,sans-serif;line-height:1.4">
-<h1>Веб-сервер працює</h1>
-<p><b>Host:</b> ${host} &nbsp; <b>Port:</b> ${port} &nbsp; <b>Cache:</b> ${CACHE_DIR}</p>
-<p>Маршрути: <code>GET /</code>, <code>GET /health</code>, <code>GET /cache/:name</code>, <code>POST /cache/:name</code></p>
-<h2>Файли у кеші (${files.length})</h2>
+<h1>Cache (${files.length})</h1>
+<p>Host: <b>${host}</b> | Port: <b>${port}</b> | Dir: <b>${CACHE_DIR}</b></p>
+<p>Використання: <code>GET/PUT/DELETE /&lt;HTTP_CODE&gt;</code>, наприклад <code>/200</code>. Файл зберігається як <code>&lt;code&gt;.jpg</code>.</p>
 <ol>${list || '<em>порожньо</em>'}</ol>
-</body></html>`;
+</body>`;
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(html);
   }
 
-  if (pathname.startsWith('/cache/')) {
-    const name = pathname.slice('/cache/'.length);
-    let safeName;
-    try {
-      safeName = sanitizeName(name);
-    } catch (e) {
+  if (/^\/\d{3}$/.test(pathname)) {
+    const code = pathname.slice(1);
+    if (!codeRegex.test(code)) {
       res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
-      return res.end(JSON.stringify({ error: 'Bad file name' }));
+      return res.end(JSON.stringify({ error: 'bad code' }));
     }
-    const fullPath = cachePath(safeName);
+    const filePath = fileForCode(code);
 
     if (method === 'GET') {
       try {
-        const data = await fsp.readFile(fullPath);
-        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
-        return res.end(data);
-      } catch (e) {
+        const buf = await fsp.readFile(filePath);
+        res.writeHead(200, { 'Content-Type': 'image/jpeg' });
+        return res.end(buf);
+      } catch {
         res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-        return res.end(JSON.stringify({ error: 'Not found' }));
+        return res.end(JSON.stringify({ error: 'not found' }));
       }
     }
 
-    if (method === 'POST') {
+    if (method === 'PUT') {
       const chunks = [];
-      req.on('data', (ch) => chunks.push(ch));
+      req.on('data', ch => chunks.push(ch));
       req.on('end', async () => {
-        const body = Buffer.concat(chunks);
         try {
-          await fsp.mkdir(path.dirname(fullPath), { recursive: true });
-          await fsp.writeFile(fullPath, body);
+          const body = Buffer.concat(chunks);
+          await fsp.mkdir(path.dirname(filePath), { recursive: true });
+          await fsp.writeFile(filePath, body);
           res.writeHead(201, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ ok: true, saved: path.basename(fullPath), bytes: body.length }));
-        } catch (e) {
+          res.end(JSON.stringify({ ok: true, saved: `${code}.jpg`, bytes: body.length }));
+        } catch {
           res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(JSON.stringify({ error: 'Failed to write file' }));
+          res.end(JSON.stringify({ error: 'write failed' }));
         }
       });
       return;
     }
 
+    if (method === 'DELETE') {
+      try {
+        await fsp.unlink(filePath);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ ok: true, deleted: `${code}.jpg` }));
+      } catch {
+        res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify({ error: 'not found' }));
+      }
+    }
+
     res.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
-    return res.end(JSON.stringify({ error: 'Method not allowed' }));
+    return res.end(JSON.stringify({ error: 'method not allowed' }));
   }
 
   res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify({ error: 'Not found' }));
+  res.end(JSON.stringify({ error: 'not found' }));
 });
 
 server.listen(port, host, () => {
