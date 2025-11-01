@@ -16,5 +16,8 @@
   "bugs": {
     "url": "https://github.com/ArseniyMuska06/backend-course-2025-5/issues"
   },
-  "homepage": "https://github.com/ArseniyMuska06/backend-course-2025-5#readme"
+  "homepage": "https://github.com/ArseniyMuska06/backend-course-2025-5#readme",
+  "dependencies": {
+    "commander": "^14.0.2"
+  }
 }
